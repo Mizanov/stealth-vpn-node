@@ -69,6 +69,14 @@ from stats_manager import (
     reset_user_traffic,
     remove_user_traffic
 )
+from requests_manager import (
+    get_access_request,
+    save_access_request,
+    approve_access_request,
+    reject_access_request,
+    get_pending_requests,
+    delete_access_request_by_username
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -187,7 +195,8 @@ def format_hy2_section(hy2_json: str = "") -> str:
 def get_admin_keyboard():
     keyboard = [
         ["➕ Создать ключ", "👥 Список участников"],
-        ["📊 Трафик пользователей", "📊 Статус сервера"]
+        ["📨 Заявки на доступ", "📊 Трафик пользователей"],
+        ["📊 Статус сервера"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -337,6 +346,12 @@ def delete_user_singbox(username: str) -> bool:
     # Revoke secure subscription token and cleanup files
     revoke_subscription(valid_username, www_dir=WWW_DIR)
 
+    # Clean up access requests for deleted user
+    try:
+        delete_access_request_by_username(valid_username)
+    except Exception as re:
+        logger.debug(f"Could not clean up access request for {valid_username}: {re}")
+
     # Clean up traffic statistics for deleted user
     try:
         remove_user_traffic(valid_username)
@@ -391,6 +406,7 @@ async def send_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 🚀 **Sing-Box**: Hysteria 2 Salamander UDP + VLESS/Trojan WS\n\n"
         "⚡ **Доступные команды администратора:**\n"
         "• `/new <имя>` — сгенерировать ключ и универсальную подписку\n"
+        "• `/requests` — список ожидающих заявок на подключение\n"
         "• `/list` — список всех участников с привязкой к Telegram и трафиком\n"
         "• `/stats` — сводная статистика сетевого трафика\n"
         "• `/del <имя>` — удалить пользователя и аннулировать токен\n"
@@ -430,25 +446,59 @@ async def send_user_cabinet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await target.reply_text(msg.replace("**", "").replace("`", ""), reply_markup=get_user_registered_keyboard())
         await target.reply_text("Выберите необходимое действие в меню:", reply_markup=reply_markup)
     else:
+        req = get_access_request(user.id)
+        if req and req.get("status") == "pending":
+            safe_name = escape_md(user.first_name or "друг")
+            req_time = (req.get("requested_at") or "—")[:16].replace("T", " ")
+            msg = (
+                f"👋 Здравствуйте, {safe_name}!\n\n"
+                f"⏳ **Ваша заявка на подключение находится на рассмотрении.**\n\n"
+                f"📅 Дата отправки: `{req_time} UTC`\n\n"
+                f"Администратор уже уведомлён. Как только доступ будет одобрен, бот автоматически пришлёт вам персональный ключ, QR-код и универсальную ссылку подписки."
+            )
+            keyboard = [
+                [InlineKeyboardButton("📖 Инструкция по подключению", callback_data="user_guide")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            try:
+                await target.reply_text(msg, reply_markup=get_user_unregistered_keyboard(), parse_mode="Markdown")
+            except Exception:
+                await target.reply_text(msg.replace("**", "").replace("`", ""), reply_markup=get_user_unregistered_keyboard())
+            return
+
+        if req and req.get("status") == "rejected":
+            safe_name = escape_md(user.first_name or "друг")
+            msg = (
+                f"👋 Здравствуйте, {safe_name}!\n\n"
+                f"❌ **Ваша заявка на подключение к узлу была отклонена администратором.**\n\n"
+                f"Если вы считаете, что произошла ошибка, обратитесь к владельцу узла."
+            )
+            keyboard = [
+                [InlineKeyboardButton("📖 Инструкция по подключению", callback_data="user_guide")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            try:
+                await target.reply_text(msg, reply_markup=get_user_unregistered_keyboard(), parse_mode="Markdown")
+            except Exception:
+                await target.reply_text(msg.replace("**", "").replace("`", ""), reply_markup=get_user_unregistered_keyboard())
+            return
+
         safe_name = escape_md(user.first_name or "друг")
         msg = (
-            f"👋 Привет, {safe_name}! На связи персональный узел связи! 🚀\n\n"
-            f"Да-да, тот самый сервер в Финляндии, про который ходят легенды. "
-            f"Никакой рекламы казино, никаких падений посреди любимого сериала в пятницу вечером "
-            f"и никаких зависающих картинок с котиками.\n\n"
-            f"🛸 **Что здесь вообще происходит?**\n"
-            f"Мы собрали на одном узле всё самое передовое, чтобы интернет летал со скоростью света:\n"
-            f"• ⚡ **VLESS REALITY & Vision** — для провайдеров вы просто читаете сайт дизайн-студии, а сами на космической скорости смотрите 4K-видео.\n"
-            f"• 🚀 **Hysteria 2 на протоколе UDP** — пробивает плохой Wi-Fi, мобильные помехи и даже соседскую дрель.\n"
-            f"• 📱 **Универсальная подписка 5-в-1** — один волшебный ключ для смартфона, ноутбука, планшета и хоть умного холодильника.\n\n"
-            f"🎫 **Правила нашего закрытого клуба:**\n"
-            f"1. Нажмите кнопку **«🚀 Получить ключ в один клик»** внизу.\n"
-            f"2. Бот мгновенно выдаст персональную ссылку и QR-код.\n"
-            f"3. ⚠️ *Внимание:* ключ выдаётся **строго один раз на человека** (в одни руки, чтобы сервер не лопнул от перегрузки).\n\n"
-            f"Жмите кнопку ниже — и приятного полёта! 🪐"
+            f"👋 Привет, {safe_name}! На связи защищённый узел связи! 🚀\n\n"
+            f"Здесь собрано всё самое передовое для скоростной и надёжной передачи данных:\n"
+            f"• ⚡ **VLESS REALITY & Vision** — криптографическая маскировка трафика\n"
+            f"• 🚀 **Hysteria 2 Salamander** — протокол на базе UDP с защитой от потерь пакетов\n"
+            f"• 📱 **Универсальная подписка 5-в-1** — один ключ для всех ваших устройств\n\n"
+            f"🎫 **Правила доступа:**\n"
+            f"Подключение к узлу осуществляется по согласованию с администратором.\n"
+            f"1. Нажмите кнопку **«🚀 Запросить доступ»** ниже.\n"
+            f"2. Ваша заявка отправится администратору на рассмотрение.\n"
+            f"3. После одобрения бот автоматически пришлёт вам персональный ключ и готовую подписку.\n\n"
+            f"Нажмите кнопку ниже, чтобы отправить заявку 👇"
         )
         keyboard = [
-            [InlineKeyboardButton("🚀 Получить ключ в один клик", callback_data="req_access")],
+            [InlineKeyboardButton("🚀 Запросить доступ", callback_data="req_access")],
             [InlineKeyboardButton("📖 Инструкция по подключению", callback_data="user_guide")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -456,7 +506,20 @@ async def send_user_cabinet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await target.reply_text(msg, reply_markup=get_user_unregistered_keyboard(), parse_mode="Markdown")
         except Exception:
             await target.reply_text(msg.replace("**", "").replace("`", ""), reply_markup=get_user_unregistered_keyboard())
-        await target.reply_text("Нажмите для выпуска персонального ключа:", reply_markup=reply_markup)
+        await target.reply_text("Нажмите для отправки заявки на подключение:", reply_markup=reply_markup)
+
+
+class ChatTarget:
+    """Adapter allowing deliver_user_credentials to deliver to any Telegram chat_id."""
+    def __init__(self, bot, chat_id: int):
+        self.bot = bot
+        self.chat_id = chat_id
+
+    async def reply_photo(self, *args, **kwargs):
+        return await self.bot.send_photo(chat_id=self.chat_id, *args, **kwargs)
+
+    async def reply_text(self, *args, **kwargs):
+        return await self.bot.send_message(chat_id=self.chat_id, *args, **kwargs)
 
 
 async def deliver_user_credentials(
@@ -590,7 +653,7 @@ async def request_access_handler(update: Update, context: ContextTypes.DEFAULT_T
     if not user:
         return
 
-    # Check if already registered (Single-issue self-service lock)
+    # Check if already registered (Single-issue access lock)
     existing = get_user_by_tg_id(user.id)
     if existing:
         username, _ = existing
@@ -602,62 +665,73 @@ async def request_access_handler(update: Update, context: ContextTypes.DEFAULT_T
             await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_user_registered_keyboard())
         return
 
-    # Derive unique sanitized username
-    base_name = ""
-    if user.username:
-        clean_user = re.sub(r"[^a-zA-Z0-9_-]", "", user.username.lower())
-        if len(clean_user) >= 3:
-            base_name = f"tg_{clean_user[:20]}"
-    if not base_name:
-        base_name = f"user_{user.id}"
-
-    existing_users = set(get_users_list())
-    candidate_name = base_name
-    counter = 1
-    while candidate_name in existing_users:
-        candidate_name = f"{base_name}_{counter}"
-        counter += 1
-
-    extra_meta = {
-        "tg_id": user.id,
-        "tg_username": user.username or "",
-        "tg_first_name": user.first_name or "",
-        "tg_last_name": user.last_name or "",
-        "issued_at": datetime.now(timezone.utc).isoformat()
-    }
-
-    res = create_user_singbox(candidate_name, extra_meta=extra_meta)
-    if not res or "error" in res:
-        err_msg = res.get("error", "Неизвестная ошибка") if res else "Ошибка создания учетной записи"
-        logger.error("Failed to self-register user %s (%s): %s", user.id, candidate_name, err_msg)
-        fail_text = f"❌ Не удалось выпустить ключ: {err_msg}. Обратитесь к администратору."
+    # Check if a request already exists and is pending or rejected
+    req = get_access_request(user.id)
+    if req and req.get("status") == "pending":
+        msg = "⏳ Ваша заявка уже отправлена администратору и находится на рассмотрении. Пожалуйста, ожидайте решения."
         if update.callback_query:
-            await update.callback_query.message.reply_text(fail_text)
+            await update.callback_query.answer("Заявка уже на рассмотрении!", show_alert=True)
+            await update.callback_query.message.reply_text(msg, reply_markup=get_user_unregistered_keyboard())
         else:
-            await update.message.reply_text(fail_text)
+            await update.message.reply_text(msg, reply_markup=get_user_unregistered_keyboard())
         return
 
+    if req and req.get("status") == "rejected":
+        msg = "❌ Ваша заявка на подключение к узлу была отклонена администратором."
+        if update.callback_query:
+            await update.callback_query.answer("Заявка отклонена", show_alert=True)
+            await update.callback_query.message.reply_text(msg, reply_markup=get_user_unregistered_keyboard())
+        else:
+            await update.message.reply_text(msg, reply_markup=get_user_unregistered_keyboard())
+        return
+
+    # Register new pending request
+    user_info = {
+        "tg_username": user.username or "",
+        "tg_first_name": user.first_name or "",
+        "tg_last_name": user.last_name or ""
+    }
+    save_access_request(user.id, user_info)
+
     if update.callback_query:
-        await update.callback_query.answer("Доступ успешно активирован!")
+        await update.callback_query.answer("Заявка отправлена администратору!")
 
     target_msg = update.callback_query.message if update.callback_query else update.message
-    await deliver_user_credentials(target_msg, candidate_name, res, is_self_service=True)
+    user_confirm = (
+        "⏳ **Заявка на доступ успешно отправлена!**\n\n"
+        "Администратор получил уведомление. Как только запрос будет подтверждён, "
+        "бот сразу же пришлёт вам персональный ключ и параметры подписки."
+    )
+    try:
+        await target_msg.reply_text(user_confirm, parse_mode="Markdown", reply_markup=get_user_unregistered_keyboard())
+    except Exception:
+        await target_msg.reply_text(user_confirm.replace("**", ""), reply_markup=get_user_unregistered_keyboard())
 
-    # Notify admins about new user registration
+    # Notify all administrators with action buttons
+    safe_fn = escape_md(user.full_name or "—")
+    safe_tg = f"@{escape_md(user.username)}" if user.username else "—"
+    now_str = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+    admin_notify = (
+        "🔔 **Новая заявка на доступ к узлу!**\n\n"
+        f"👤 **Имя:** {safe_fn}\n"
+        f"🌐 **Telegram:** {safe_tg}\n"
+        f"🆔 **Telegram ID:** `{user.id}`\n"
+        f"📅 **Дата:** `{now_str} UTC`"
+    )
+    admin_kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Одобрить и выдать", callback_data=f"appr_{user.id}"),
+            InlineKeyboardButton("❌ Отклонить", callback_data=f"rejc_{user.id}")
+        ]
+    ])
     for admin_id in ADMIN_IDS:
         try:
-            safe_fn = escape_md(user.full_name or "—")
-            safe_tg = f"@{escape_md(user.username)}" if user.username else "—"
-            admin_notify = (
-                "🔔 **Новый участник получил доступ:**\n\n"
-                f"• Профиль: `{candidate_name}`\n"
-                f"• Имя: {safe_fn}\n"
-                f"• Telegram: {safe_tg} (`{user.id}`)"
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=admin_notify,
+                parse_mode="Markdown",
+                reply_markup=admin_kb
             )
-            try:
-                await context.bot.send_message(chat_id=admin_id, text=admin_notify, parse_mode="Markdown")
-            except Exception:
-                await context.bot.send_message(chat_id=admin_id, text=admin_notify.replace("**", "").replace("`", ""))
         except Exception as e:
             logger.debug("Failed to send admin notification to %s: %s", admin_id, e)
 
@@ -1119,6 +1193,156 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Error rotating subscription token for {username}: {e}")
             await query.message.reply_text(f"❌ Ошибка ротации токена: {e}")
+    elif data.startswith("appr_"):
+        target_tg_id = int(data[5:])
+        req = get_access_request(target_tg_id)
+        if not req or req.get("status") != "pending":
+            status_str = req.get("status", "не найдена") if req else "не найдена"
+            await query.answer("⚠️ Заявка уже обработана или не найдена!", show_alert=True)
+            try:
+                await query.edit_message_text(f"ℹ️ Заявка для ID {target_tg_id} уже обработана (статус: {status_str}).")
+            except Exception:
+                pass
+            return
+
+        existing = get_user_by_tg_id(target_tg_id)
+        if existing:
+            username, _ = existing
+            approve_access_request(target_tg_id, admin_id=user.id, assigned_username=username)
+            await query.answer(f"Пользователь {username} уже зарегистрирован.")
+            try:
+                await query.edit_message_text(f"ℹ️ Пользователь ID {target_tg_id} уже имеет активный ключ `{username}`.", parse_mode="Markdown")
+            except Exception:
+                pass
+            return
+
+        base_name = ""
+        if req.get("tg_username"):
+            clean_user = re.sub(r"[^a-zA-Z0-9_-]", "", req["tg_username"].lower())
+            if len(clean_user) >= 3:
+                base_name = f"tg_{clean_user[:20]}"
+        if not base_name:
+            base_name = f"user_{target_tg_id}"
+
+        existing_users = set(get_users_list())
+        candidate_name = base_name
+        counter = 1
+        while candidate_name in existing_users:
+            candidate_name = f"{base_name}_{counter}"
+            counter += 1
+
+        extra_meta = {
+            "tg_id": target_tg_id,
+            "tg_username": req.get("tg_username") or "",
+            "tg_first_name": req.get("tg_first_name") or "",
+            "tg_last_name": req.get("tg_last_name") or "",
+            "approved_by": user.id,
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+            "issued_at": datetime.now(timezone.utc).isoformat()
+        }
+
+        res = create_user_singbox(candidate_name, extra_meta=extra_meta)
+        if not res or "error" in res:
+            err_msg = res.get("error", "Неизвестная ошибка") if res else "Ошибка создания учетной записи"
+            logger.error("Failed to register approved user %s (%s): %s", target_tg_id, candidate_name, err_msg)
+            await query.answer("❌ Ошибка при создании профиля!", show_alert=True)
+            await query.message.reply_text(f"❌ Не удалось выпустить ключ для `{candidate_name}`: {err_msg}")
+            return
+
+        approve_access_request(target_tg_id, admin_id=user.id, assigned_username=candidate_name)
+        await query.answer(f"✅ Доступ для {candidate_name} успешно выдан!")
+
+        safe_fn = escape_md(req.get("tg_first_name") or "—")
+        safe_tg = f"@{escape_md(req.get('tg_username'))}" if req.get("tg_username") else "—"
+        admin_name = escape_md(user.first_name or "Администратор")
+        admin_result = (
+            f"✅ **Заявка одобрена!**\n\n"
+            f"👤 **Пользователь:** {safe_fn}\n"
+            f"🌐 **Telegram:** {safe_tg}\n"
+            f"🆔 **Telegram ID:** `{target_tg_id}`\n"
+            f"🔑 **Выдан профиль:** `{candidate_name}`\n"
+            f"👨‍💼 **Одобрил:** {admin_name}"
+        )
+        try:
+            await query.edit_message_text(text=admin_result, parse_mode="Markdown")
+        except Exception:
+            await query.edit_message_text(text=admin_result.replace("**", "").replace("`", ""))
+
+        try:
+            user_target = ChatTarget(context.bot, target_tg_id)
+            await deliver_user_credentials(user_target, candidate_name, res, is_self_service=True)
+        except Exception as deliver_err:
+            logger.error("Failed to deliver credentials to user %s: %s", target_tg_id, deliver_err)
+            await query.message.reply_text(
+                f"⚠️ Профиль `{candidate_name}` создан, но не удалось доставить его пользователю в Telegram: {deliver_err}.\n"
+                f"Возможно, пользователь заблокировал бота.",
+                parse_mode="Markdown"
+            )
+
+    elif data.startswith("rejc_"):
+        target_tg_id = int(data[5:])
+        req = get_access_request(target_tg_id)
+        if not req or req.get("status") != "pending":
+            status_str = req.get("status", "не найдена") if req else "не найдена"
+            await query.answer("⚠️ Заявка уже обработана!", show_alert=True)
+            try:
+                await query.edit_message_text(f"ℹ️ Заявка для ID {target_tg_id} уже обработана (статус: {status_str}).")
+            except Exception:
+                pass
+            return
+
+        reject_access_request(target_tg_id, admin_id=user.id)
+        await query.answer("Заявка отклонена")
+
+        safe_fn = escape_md(req.get("tg_first_name") or "—")
+        safe_tg = f"@{escape_md(req.get('tg_username'))}" if req.get("tg_username") else "—"
+        admin_name = escape_md(user.first_name or "Администратор")
+        admin_rejc = (
+            f"❌ **Заявка отклонена**\n\n"
+            f"👤 **Пользователь:** {safe_fn}\n"
+            f"🌐 **Telegram:** {safe_tg}\n"
+            f"🆔 **Telegram ID:** `{target_tg_id}`\n"
+            f"👨‍💼 **Отклонил:** {admin_name}"
+        )
+        try:
+            await query.edit_message_text(text=admin_rejc, parse_mode="Markdown")
+        except Exception:
+            await query.edit_message_text(text=admin_rejc.replace("**", "").replace("`", ""))
+
+        try:
+            await context.bot.send_message(
+                chat_id=target_tg_id,
+                text="❌ К сожалению, ваша заявка на подключение к узлу была отклонена администратором."
+            )
+        except Exception as notify_err:
+            logger.debug("Failed to notify rejected user %s: %s", target_tg_id, notify_err)
+
+
+@admin_required
+async def list_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pending = get_pending_requests()
+    target = update.callback_query.message if update.callback_query else update.message
+    if not pending:
+        await target.reply_text("✨ Нет ожидающих заявок на подключение.", reply_markup=get_admin_keyboard())
+        return
+
+    await target.reply_text(f"📋 **Ожидающие заявки на подключение ({len(pending)}):**", parse_mode="Markdown")
+    for tg_id_str, req in pending.items():
+        tg_id = int(tg_id_str)
+        safe_fn = escape_md(req.get("tg_first_name") or "—")
+        safe_tg = f"@{escape_md(req.get('tg_username'))}" if req.get("tg_username") else "—"
+        req_time = (req.get("requested_at") or "—")[:16].replace("T", " ")
+        msg = (
+            f"👤 **{safe_fn}** ({safe_tg})\n"
+            f"🆔 `{tg_id}` | 📅 `{req_time} UTC`"
+        )
+        kb = [
+            [
+                InlineKeyboardButton("✅ Одобрить", callback_data=f"appr_{tg_id}"),
+                InlineKeyboardButton("❌ Отклонить", callback_data=f"rejc_{tg_id}")
+            ]
+        ]
+        await target.reply_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1134,6 +1358,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await process_new_user(update, uname)
         elif text in ("👥 Список ключей", "👥 Список участников"):
             await list_users_command(update, context)
+        elif text in ("📨 Заявки на доступ", "📨 Заявки", "Заявки", "/requests"):
+            await list_requests_command(update, context)
         elif text in ("📊 Трафик пользователей", "📊 Трафик", "📊 Статистика", "/stats"):
             await stats_command(update, context)
         elif text == "📊 Статус сервера":
@@ -1246,6 +1472,7 @@ def main():
     app.add_handler(CommandHandler("add", new_user_command))
     app.add_handler(CommandHandler("list", list_users_command))
     app.add_handler(CommandHandler("users", list_users_command))
+    app.add_handler(CommandHandler("requests", list_requests_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("traffic", stats_command))
     app.add_handler(CommandHandler("del", del_user_command))

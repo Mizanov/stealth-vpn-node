@@ -40,3 +40,6 @@ wheels/
 users/
 *.txt
 !requirements.txt
+
+# Local AI agent configs
+.kimi-code/

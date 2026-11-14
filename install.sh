@@ -371,6 +371,7 @@ cp "$SCRIPT_DIR/bot/bot.py" \
    "$SCRIPT_DIR/bot/auth.py" \
    "$SCRIPT_DIR/bot/config_manager.py" \
    "$SCRIPT_DIR/bot/subscription_manager.py" \
+   "$SCRIPT_DIR/bot/requests_manager.py" \
    "$SCRIPT_DIR/bot/xray_manager.py" \
    "$SCRIPT_DIR/bot/stats_manager.py" \
    /opt/incy-bot/
